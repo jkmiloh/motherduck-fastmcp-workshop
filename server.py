@@ -4,6 +4,7 @@ FastMCP Gateway runs this file. Its entrypoint setting is `server.py:mcp`.
 """
 
 from collections import Counter, defaultdict
+from datetime import timedelta
 from statistics import median
 from typing import Annotated, Literal
 
@@ -147,6 +148,51 @@ def get_request(request_id: str) -> dict:
     if request is None:
         raise ToolError(f"No request with id {request_id!r}. Use search_requests to find valid ids.")
     return request.as_dict()
+
+
+CHART_HEIGHT = 12
+
+
+def _bar_chart(counts: list[tuple[str, int]], title: str) -> str:
+    """Draw a vertical ASCII bar chart: x axis = labels, y axis = counts."""
+    top = max((n for _, n in counts), default=0) or 1
+    width = max(len(label) for label, _ in counts)
+    y_width = len(str(top))
+    lines = [title, ""]
+    for level in range(CHART_HEIGHT, 0, -1):
+        threshold = top * level / CHART_HEIGHT
+        tick = str(round(threshold)) if level in (CHART_HEIGHT, CHART_HEIGHT // 2) else ""
+        bars = " ".join(("█" * width if n >= threshold - top / (2 * CHART_HEIGHT) else " " * width) for _, n in counts)
+        lines.append(f"{tick:>{y_width}} │ {bars}")
+    lines.append(f"{'0':>{y_width}} └─" + "─" * (len(counts) * (width + 1)))
+    lines.append(" " * (y_width + 3) + " ".join(label.center(width) for label, _ in counts))
+    lines.append(" " * (y_width + 3) + " ".join(str(n).center(width) for _, n in counts))
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def request_timeseries(neighborhood: Neighborhood = None) -> str:
+    """Daily time series of 311 requests, drawn as a text bar chart.
+
+    Returns a ready-to-print ASCII chart with one bar per day (x axis =
+    date, y axis = number of requests opened that day), with the exact
+    counts under each bar. Leave neighborhood empty for San Francisco as a
+    whole, or pass an exact official neighborhood name for one area.
+    Show the chart to the user verbatim in a code block. The data covers
+    one week, so there is one bar per day, not per month. For a single
+    total or a ranking across neighborhoods, use count_requests instead.
+    """
+    rows = _matching(neighborhood=neighborhood)
+    if not rows:
+        raise ToolError(f"No requests in {neighborhood!r} this week. Try another neighborhood or leave it empty for all of SF.")
+    first = min(r.opened for r in REQUESTS).date()
+    last = max(r.opened for r in REQUESTS).date()
+    per_day = Counter(r.opened.date() for r in rows)
+    days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    counts = [(day.strftime("%a %d"), per_day.get(day, 0)) for day in days]
+    area = neighborhood or "San Francisco (citywide)"
+    title = f"311 requests per day — {area}, {first:%b %d}–{last:%b %d, %Y} (total {len(rows):,})"
+    return _bar_chart(counts, title)
 
 
 if __name__ == "__main__":
