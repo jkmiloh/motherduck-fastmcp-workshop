@@ -323,5 +323,67 @@ def request_timeseries(
     return _line_chart(counts, title)
 
 
+def _lookup(name: str, choices: list[str]) -> str | None:
+    """Return the choice equal to `name` ignoring case and spaces at the ends, or None."""
+    by_lower = {c.lower(): c for c in choices}
+    return by_lower.get(name.strip().lower())
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def count_in_neighborhood(
+    ctx: Context,
+    name: Annotated[str, Field(description="An official neighborhood ('Mission') or a local name ('Lower Nob Hill').")],
+    boundary: Annotated[
+        str | None,
+        Field(description="For a local name that spans several official neighborhoods: one of those neighborhoods, or 'all'."),
+    ] = None,
+) -> int | str | InputRequiredResult:
+    """Count this week's 311 requests in a place people name, official or local.
+
+    Returns an integer count. Accepts the 41 official neighborhoods and the
+    ~120 local names people actually use (e.g. "Lower Nob Hill", "Corona
+    Heights"). If a local name overlaps several official neighborhoods, this
+    tool asks the user which part to count, unless you pass `boundary`: one
+    of the overlapped neighborhoods, or "all" for the whole local area. Pass
+    `boundary` when the user already said which part they mean. If the user
+    declines, it returns a short message instead of a number.
+    For counts by service or status, or rankings across neighborhoods, use
+    count_requests instead.
+    """
+    official = _lookup(name, NEIGHBORHOODS)
+    if official:
+        return sum(1 for r in REQUESTS if r.neighborhood == official)
+
+    local = _lookup(name, LOCAL_NAMES)
+    if local is None:
+        suggestions = closest(name, NEIGHBORHOODS + LOCAL_NAMES)
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise ToolError(f"Unknown neighborhood {name!r}.{hint} Call dataset_info for the official names.")
+
+    in_area = [r for r in REQUESTS if r.local_name == local]
+    parts = sorted({r.neighborhood for r in in_area if r.neighborhood})
+    if len(parts) <= 1:
+        return len(in_area)
+
+    all_option = f"All of {local}"
+    if boundary is not None:
+        if boundary.strip().lower() in ("all", all_option.lower()):
+            return len(in_area)
+        part = _lookup(boundary, parts)
+        if part is None:
+            raise ToolError(f"{local} overlaps {', '.join(parts)}. Pass one of those as boundary, or 'all'.")
+        return sum(1 for r in in_area if r.neighborhood == part)
+
+    key = "neighborhood_part"
+    choice = read_choice(ctx, key)
+    if choice is None:
+        return ask_choice(key, f"{local} overlaps {len(parts)} official neighborhoods. Which part should I count?", parts + [all_option])
+    if not choice.accepted:
+        return f"Nothing was counted: no part of {local} was chosen. Call again with boundary set to one of {', '.join(parts)}, or 'all'."
+    if choice.value == all_option:
+        return len(in_area)
+    return sum(1 for r in in_area if r.neighborhood == choice.value)
+
+
 if __name__ == "__main__":
     mcp.run()
